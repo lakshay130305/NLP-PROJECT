@@ -31,3 +31,8 @@ soundfile
 # Testing
 pytest
 pytest-cov
+
+# Web API
+fastapi
+uvicorn[standard]
+python-multipart
