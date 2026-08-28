@@ -1,0 +1,23 @@
+# Virtual environment
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Model / dataset caches (regenerated on first run, large)
+.cache/
+outputs/
+
+# Env / secrets
+.env
+*.token
+
+# OS
+.DS_Store
+Thumbs.db

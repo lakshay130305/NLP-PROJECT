@@ -1,0 +1,33 @@
+# Core ML stack -- CPU-only builds (see README.md "Windows CPU torch install" section
+# for why these exact versions/index are required on this machine).
+--index-url https://download.pytorch.org/whl/cpu
+torch==2.8.0
+torchaudio==2.8.0
+torchvision==0.23.0
+
+--extra-index-url https://pypi.org/simple
+numpy
+scipy
+scikit-learn
+pandas
+
+# Speaker diarization / VAD / OSD
+pyannote-audio
+pyannote-metrics
+pyannote-core
+
+# Speaker embeddings + speech separation
+speechbrain
+
+# ASR
+faster-whisper
+transformers
+ctranslate2
+
+# Dataset access
+datasets
+soundfile
+
+# Testing
+pytest
+pytest-cov
