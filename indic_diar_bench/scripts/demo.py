@@ -15,6 +15,12 @@ Usage:
 
   # quick structural smoke test with no model downloads:
   python scripts/demo.py meeting.wav --backend dummy
+
+  # choose export formats (default is all three: txt, json, srt):
+  python scripts/demo.py meeting.wav --formats srt,json
+
+A bad file in a batch (unreadable audio, a pipeline crash on one recording) is logged and
+skipped -- the rest of the batch still runs, and a pass/fail summary prints at the end.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -112,6 +119,49 @@ def format_transcript(transcript, audio_duration: float) -> str:
     return "\n".join(lines)
 
 
+def _srt_timestamp(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    ms = round(seconds * 1000)
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1_000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def format_srt(transcript) -> str:
+    lines = []
+    for i, u in enumerate(transcript.sorted_by_time(), 1):
+        lines.append(str(i))
+        lines.append(f"{_srt_timestamp(u.start)} --> {_srt_timestamp(u.end)}")
+        lines.append(f"{u.speaker}: {u.text}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+class Heartbeat:
+    """Prints a periodic elapsed-time line while a long, silent blocking call (pipeline.run)
+    is in progress, so a multi-minute pretrained run doesn't look hung."""
+
+    def __init__(self, label: str, interval: float = 15.0):
+        self._label = label
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._tick, daemon=True)
+
+    def _tick(self):
+        t0 = time.perf_counter()
+        while not self._stop.wait(self._interval):
+            print(f"  ...still working on {self._label} ({time.perf_counter() - t0:.0f}s elapsed)")
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info):
+        self._stop.set()
+        self._thread.join()
+
+
 def transcript_to_dict(transcript) -> dict:
     return {
         "recording_id": transcript.recording_id,
@@ -178,6 +228,11 @@ def run(args: argparse.Namespace) -> None:
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    formats = set(args.formats)
+    succeeded: list[str] = []
+    failed: list[tuple[str, str]] = []
+    batch_t0 = time.perf_counter()
+
     print(f"\nProcessing {len(audio_files)} file(s)...\n")
     for i, path in enumerate(audio_files, 1):
         print(f"[{i}/{len(audio_files)}] {path.name}")
@@ -186,29 +241,54 @@ def run(args: argparse.Namespace) -> None:
             audio, sr = load_audio_file(path)
         except Exception as e:  # noqa: BLE001 -- keep processing the rest of the batch on a bad file
             print(f"  FAILED to load audio: {e}\n")
+            failed.append((path.name, str(e)))
             continue
 
         if len(audio) == 0:
             print("  (empty/silent audio, skipping)\n")
+            failed.append((path.name, "empty/silent audio"))
             continue
 
         recording_id = path.stem
-        transcript, stats, _overlap_regions = pipeline.run(audio, sr, recording_id=recording_id, language=language)
+        try:
+            with Heartbeat(path.name):
+                transcript, stats, _overlap_regions = pipeline.run(
+                    audio, sr, recording_id=recording_id, language=language
+                )
+        except Exception as e:  # noqa: BLE001 -- one bad recording shouldn't kill the whole batch
+            print(f"  FAILED to process: {e}\n")
+            failed.append((path.name, str(e)))
+            continue
         elapsed = time.perf_counter() - t0
 
         print()
         print(format_transcript(transcript, stats.audio_duration))
         print(f"\n  (processed in {elapsed:.1f}s, RTF={stats.rtf:.2f})\n")
 
-        txt_path = out_dir / f"{recording_id}.transcript.txt"
-        json_path = out_dir / f"{recording_id}.transcript.json"
-        txt_path.write_text(format_transcript(transcript, stats.audio_duration), encoding="utf-8")
-        json_path.write_text(json.dumps(transcript_to_dict(transcript), indent=2, ensure_ascii=False), encoding="utf-8")
-        print(f"  Saved: {txt_path}")
-        print(f"  Saved: {json_path}\n")
+        if "txt" in formats:
+            txt_path = out_dir / f"{recording_id}.transcript.txt"
+            txt_path.write_text(format_transcript(transcript, stats.audio_duration), encoding="utf-8")
+            print(f"  Saved: {txt_path}")
+        if "json" in formats:
+            json_path = out_dir / f"{recording_id}.transcript.json"
+            json_path.write_text(
+                json.dumps(transcript_to_dict(transcript), indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            print(f"  Saved: {json_path}")
+        if "srt" in formats:
+            srt_path = out_dir / f"{recording_id}.srt"
+            srt_path.write_text(format_srt(transcript), encoding="utf-8")
+            print(f"  Saved: {srt_path}")
+        print()
+        succeeded.append(path.name)
         print("-" * 60 + "\n")
 
-    print("Done.")
+    total_elapsed = time.perf_counter() - batch_t0
+    print(f"Done. {len(succeeded)}/{len(audio_files)} succeeded in {total_elapsed:.1f}s.")
+    if failed:
+        print(f"{len(failed)} failed:")
+        for name, reason in failed:
+            print(f"  - {name}: {reason}")
 
 
 def main():
@@ -227,8 +307,11 @@ def main():
     parser.add_argument("--hf-token", type=str, default=None,
                          help="HuggingFace token for gated pyannote VAD/OSD. Defaults to HF_TOKEN env var.")
     parser.add_argument("--output-dir", type=str, default="outputs/transcripts",
-                         help="Where to save .txt/.json transcripts (default: outputs/transcripts).")
+                         help="Where to save transcripts (default: outputs/transcripts).")
+    parser.add_argument("--formats", type=str, default="txt,json,srt",
+                         help="Comma-separated export formats to save: txt,json,srt (default: all three).")
     args = parser.parse_args()
+    args.formats = [f.strip().lower() for f in args.formats.split(",") if f.strip()]
 
     run(args)
 

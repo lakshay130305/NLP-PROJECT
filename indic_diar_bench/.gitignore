@@ -18,14 +18,6 @@ outputs/
 .env
 *.token
 
-# Frontend (web/)
-web/node_modules/
-web/dist/
-web/.vite/
-
-# API runtime storage (uploaded audio files -- regenerated per session)
-api/storage/
-
 # OS
 .DS_Store
 Thumbs.db

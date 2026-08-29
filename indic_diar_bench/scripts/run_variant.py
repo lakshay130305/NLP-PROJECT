@@ -7,6 +7,9 @@ Usage:
 
   # real dataset + real pretrained models (needs network, HF token for gated pyannote models):
   python scripts/run_variant.py --dataset --limit 10 --backend pretrained --variants B1,B2,B3,B4,B5,PROPOSED
+
+  # score against a locally downloaded Parquet shard instead of streaming from the Hub:
+  python scripts/run_variant.py --parquet path/to/hindi-test.parquet --backend pretrained --variants PROPOSED
 """
 
 from __future__ import annotations
@@ -46,12 +49,20 @@ def iter_real_recordings(languages, conditions, limit):
     yield from load_indic_diarbench(languages=languages, conditions=conditions, limit=limit)
 
 
+def iter_local_parquet_recordings(parquet_path, limit):
+    from data.prep.manifest import load_indic_diarbench_local
+
+    yield from load_indic_diarbench_local(parquet_path, limit=limit)
+
+
 def run(args: argparse.Namespace) -> None:
     variants = args.variants.split(",") if args.variants else list(ALL_VARIANTS)
     backend = Backend.PRETRAINED if args.backend == "pretrained" else Backend.DUMMY
 
     if args.synthetic is not None:
         recordings = list(iter_synthetic_recordings(args.synthetic))
+    elif args.parquet is not None:
+        recordings = list(iter_local_parquet_recordings(args.parquet, args.limit))
     else:
         recordings = list(iter_real_recordings(args.languages, None, args.limit))
 
@@ -85,8 +96,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--synthetic", type=int, default=None, metavar="N",
                          help="Generate N synthetic conversations instead of loading the real dataset.")
-    parser.add_argument("--dataset", action="store_true", help="Load the real Indic DiarBench dataset from HuggingFace.")
-    parser.add_argument("--languages", nargs="*", default=None, help="Restrict to these languages (real dataset only).")
+    parser.add_argument("--dataset", action="store_true", help="Load the real Indic DiarBench dataset from HuggingFace (streamed).")
+    parser.add_argument("--parquet", type=str, default=None, metavar="PATH",
+                         help="Load recordings from a local Parquet shard of the dataset instead of streaming "
+                              "from the Hub (e.g. a file downloaded by hand from the HF dataset viewer).")
+    parser.add_argument("--languages", nargs="*", default=None, help="Restrict to these languages (--dataset only, not --parquet).")
     parser.add_argument("--limit", type=int, default=5, help="Max number of real-dataset recordings to load.")
     parser.add_argument("--variants", type=str, default=None, help=f"Comma-separated subset of {ALL_VARIANTS}.")
     parser.add_argument("--backend", choices=["dummy", "pretrained"], default="dummy",
@@ -99,7 +113,7 @@ def main():
     if args.hf_token is None:
         args.hf_token = os.environ.get("HF_TOKEN")
 
-    if args.synthetic is None and not args.dataset:
+    if args.synthetic is None and not args.dataset and args.parquet is None:
         args.synthetic = 5  # default to a quick synthetic smoke test if nothing was specified
 
     run(args)

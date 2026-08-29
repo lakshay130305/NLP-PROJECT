@@ -12,12 +12,7 @@ separation + multi-speaker attribution} -> multilingual ASR -> transcript fusion
 - All 6 system variants (B1, B2, B3, B4, B5, PROPOSED -- section 11.3) run cleanly with
   the `dummy` backend (zero network/model downloads) on synthetic overlap audio, producing
   the full section-13.1 metrics table.
-- 68 unit/integration tests pass (`pytest tests/`).
-- **A web frontend now exists** (React + Vite + Tailwind, `web/`) talking to a FastAPI
-  backend (`api/`) that wraps the same pipeline -- upload audio, poll a job queue, view
-  the transcript with synced audio playback and overlap highlighting, export txt/json/srt.
-  Confirmed working end-to-end this session against the real pretrained backend, not just
-  the dummy one. See "Web frontend" below.
+- 59 unit/integration tests pass (`pytest tests/`).
 - **The `pretrained` backend (real pyannote/speechbrain/faster-whisper models) was
   exercised end-to-end this session** on a real downloaded recording
   (`hindi_nf_001`, 75s, from `sarvamai/indic-diarbench`) across every variant --
@@ -207,11 +202,7 @@ data/prep/    Real-dataset loader (sarvamai/indic-diarbench), language-code mapp
 scripts/      demo.py (interactive: your own audio -> transcript), run_variant.py
               (benchmark against the dataset), stress_test.py (long-running resilience
               test across the whole dataset), summarize_stress_test.py
-api/          FastAPI service wrapping the pipeline for the web frontend (jobs.py,
-              routes/, pipeline_runner.py) -- see "Web frontend" below
-web/          React + Vite + Tailwind frontend (upload audio, poll job status,
-              view/export the transcript) -- talks to api/ over HTTP
-tests/        pytest suite (68 tests, dummy backend, no network needed)
+tests/        pytest suite (59 tests, dummy backend, no network needed)
 ```
 
 ## Demo: transcribe your own audio
@@ -239,54 +230,6 @@ Prints a `[start - end]  SPEAKER  text` transcript per file to the console and s
 `.txt` and `.json` versions to `outputs/transcripts/` (`--output-dir` to change). Accepts
 WAV/FLAC/OGG natively and falls back to PyAV (bundles its own decoder, no system FFmpeg
 needed) for MP3/M4A/AAC/etc. -- confirmed working on a real encoded MP3 this session.
-
-## Web frontend
-
-A browser UI on top of the same pipeline: upload audio, watch a job queue, view the
-speaker-attributed transcript with synced audio playback and overlap-region highlighting,
-export as txt/json/srt. Same file-upload-only scope as the CLI demo above (no live mic
-recording yet). **Confirmed working end-to-end this session** on a real 75s Hindi
-recording through the full stack (upload -> FastAPI -> real pretrained pipeline -> 22
-utterances, 3 speakers, 7 overlap regions detected -> all three export formats -> audio
-playback), not just unit-tested in isolation.
-
-```bash
-# terminal 1 -- backend (from the repo root)
-export HF_TOKEN=hf_...          # needed for pyannote's gated VAD/OSD model
-uvicorn api.main:app --reload --port 8000
-
-# terminal 2 -- frontend
-cd web
-npm install    # first time only
-npm run dev
-```
-
-Open the URL Vite prints (default `http://localhost:5173`). The dev server proxies
-`/api/*` to the backend on port 8000 (configured in `web/vite.config.ts`), so no CORS
-setup is needed for local use.
-
-**Architecture**: one `OverlapAwarePipeline` (variant `PROPOSED`, `asr_model_size` from
-the `ASR_MODEL_SIZE` env var, default `tiny`) is built once at server startup (`api/main.py`'s
-FastAPI `lifespan`) and reused across all requests -- model loading is too expensive to
-redo per-request. Uploads become background jobs run on a single-worker
-`ThreadPoolExecutor` (not `BackgroundTasks`, which would block the event loop for the
-whole job and stall status polling) -- deliberately one worker, since CPU-bound inference
-on this project's models gains nothing from "concurrent" jobs and a single worker gives
-free FIFO batch queueing. Job state is an in-memory dict (single-user local demo, no
-persistence needed -- documented limitation, not an oversight: restarting `uvicorn` loses
-job history). `api/routes/` has one file per resource (`jobs`, `audio`, `export`,
-`languages`); `api/pipeline_runner.py` is the only place that touches the actual
-`OverlapAwarePipeline`, reusing `scripts/demo.py`'s already-validated
-`resolve_language`/`transcript_to_dict`/`AUDIO_EXTENSIONS` rather than reimplementing
-them. If the pipeline fails to load at startup (e.g. no HF token, or a crash like the ones
-documented in "Bugs found" above), the server still starts -- `/api/health` reports
-`pipeline_loaded: false` and jobs fail individually with a clear error instead of the
-whole process refusing to boot.
-
-Automated coverage: `tests/test_api.py` (9 tests) exercises the full job lifecycle -
-upload, poll, export, audio playback, error paths - against the `dummy` backend (no
-network/model download needed for CI-speed testing), consistent with the rest of the
-suite's dummy-vs-pretrained split.
 
 ## Running it
 

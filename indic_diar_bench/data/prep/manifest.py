@@ -87,6 +87,35 @@ def load_indic_diarbench(
                 return
 
 
+def load_indic_diarbench_local(
+    parquet_path: str,
+    conditions: list[AcousticCondition] | None = None,
+    limit: int | None = None,
+) -> Iterator[tuple[ManifestEntry, np.ndarray, int]]:
+    """Same as `load_indic_diarbench` but reads a local Parquet shard (e.g. downloaded by
+    hand from the HuggingFace Hub file browser) instead of streaming from the Hub. Expects
+    the same schema documented at the top of this module -- one row per recording."""
+    from datasets import Audio, load_dataset
+
+    ds = load_dataset("parquet", data_files=parquet_path, split="train")
+    ds = ds.cast_column("audio", Audio(decode=False))
+
+    count = 0
+    for row in ds:
+        condition = _CONDITION_MAP.get(row["dataset_type"])
+        if condition is None:
+            continue
+        if conditions and condition not in conditions:
+            continue
+
+        entry, audio, sr = _row_to_entry(row, condition)
+        yield entry, audio, sr
+
+        count += 1
+        if limit is not None and count >= limit:
+            return
+
+
 def _decode_audio(audio_field: dict) -> tuple[np.ndarray, int]:
     """Decode a `datasets.Audio(decode=False)` field ({'bytes': ..., 'path': ...}) via
     soundfile, sidestepping the torchcodec/FFmpeg dependency (see load_indic_diarbench)."""
