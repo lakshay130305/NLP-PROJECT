@@ -1,5 +1,58 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  --color-bg: theme(colors.slate.50);
+  --color-surface: theme(colors.white);
+  --color-border: theme(colors.slate.200);
+  --color-text: theme(colors.slate.900);
+  --color-text-muted: theme(colors.slate.500);
+  --color-accent: theme(colors.indigo.600);
+  --color-accent-soft: theme(colors.indigo.50);
+}
+
+[data-theme="dark"] {
+  --color-bg: theme(colors.slate.950);
+  --color-surface: theme(colors.slate.900);
+  --color-border: theme(colors.slate.800);
+  --color-text: theme(colors.slate.100);
+  --color-text-muted: theme(colors.slate.400);
+  --color-accent: theme(colors.indigo.400);
+  --color-accent-soft: theme(colors.indigo.950);
+}
+
 body {
   margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out;
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 1.5s ease-in-out infinite;
 }

@@ -1,0 +1,7 @@
+# Stray root-level virtual environment (the real one lives in indic_diar_bench/.venv)
+.venv/
+venv/
+
+# Env / secrets
+.env
+*.token

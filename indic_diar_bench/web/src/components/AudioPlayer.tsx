@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react"
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react"
 
 export interface AudioPlayerHandle {
   seek: (time: number) => void
@@ -9,12 +9,17 @@ interface Props {
   onTimeUpdate?: (time: number) => void
 }
 
+function isTypingTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false
+  const tag = el.tagName
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable
+}
+
 export const AudioPlayer = forwardRef<AudioPlayerHandle, Props>(function AudioPlayer(
   { src, onTimeUpdate },
   ref,
 ) {
   const audioRef = useRef<HTMLAudioElement>(null)
-  const [duration, setDuration] = useState(0)
 
   useImperativeHandle(ref, () => ({
     seek(time: number) {
@@ -29,16 +34,22 @@ export const AudioPlayer = forwardRef<AudioPlayerHandle, Props>(function AudioPl
     const el = audioRef.current
     if (!el) return
     const handleTimeUpdate = () => onTimeUpdate?.(el.currentTime)
-    const handleLoadedMetadata = () => setDuration(el.duration)
     el.addEventListener("timeupdate", handleTimeUpdate)
-    el.addEventListener("loadedmetadata", handleLoadedMetadata)
-    return () => {
-      el.removeEventListener("timeupdate", handleTimeUpdate)
-      el.removeEventListener("loadedmetadata", handleLoadedMetadata)
-    }
+    return () => el.removeEventListener("timeupdate", handleTimeUpdate)
   }, [onTimeUpdate])
 
-  return (
-    <audio ref={audioRef} src={src} controls className="w-full" data-duration={duration} />
-  )
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.code !== "Space" || isTypingTarget(e.target)) return
+      const el = audioRef.current
+      if (!el) return
+      e.preventDefault()
+      if (el.paused) void el.play()
+      else el.pause()
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [])
+
+  return <audio ref={audioRef} src={src} controls className="w-full" />
 })

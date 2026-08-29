@@ -18,7 +18,7 @@ export function LanguageSelect({ value, onChange }: Props) {
 
   return (
     <select
-      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800"
+      className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text)]"
       value={value ?? ""}
       onChange={(e) => onChange(e.target.value || null)}
     >

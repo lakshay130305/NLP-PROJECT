@@ -7,6 +7,7 @@ const ACTIVE_STATUSES = new Set(["queued", "processing"])
 export function usePollJobs(intervalMs = 3000) {
   const [jobs, setJobs] = useState<JobSummary[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const jobsRef = useRef<JobSummary[]>([])
 
   useEffect(() => {
@@ -19,9 +20,12 @@ export function usePollJobs(intervalMs = 3000) {
         if (cancelled) return
         jobsRef.current = list
         setJobs(list)
+        setError(null)
         setLoading(false)
-      } catch {
-        if (!cancelled) setLoading(false)
+      } catch (e) {
+        if (cancelled) return
+        setError(e instanceof Error ? e.message : String(e))
+        setLoading(false)
       }
       if (cancelled) return
       const anyActive = jobsRef.current.some((j) => ACTIVE_STATUSES.has(j.status))
@@ -35,5 +39,5 @@ export function usePollJobs(intervalMs = 3000) {
     }
   }, [intervalMs])
 
-  return { jobs, loading }
+  return { jobs, loading, error }
 }
