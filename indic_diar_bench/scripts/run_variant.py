@@ -13,6 +13,9 @@ Usage:
 
   # does PROPOSED actually beat B1, or is a lower average just noise? (paired significance test)
   python scripts/run_variant.py --dataset --limit 30 --backend pretrained --variants B1,PROPOSED --significance
+
+  # single clip: see the actual transcript (reference vs predicted) plus that clip's own numbers:
+  python scripts/run_variant.py --dataset --languages Hindi --limit 1 --backend pretrained --variants PROPOSED --show-transcript
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from pipeline.config import Backend
 from pipeline.orchestrator import OverlapAwarePipeline
 from pipeline.variants import ALL_VARIANTS, build_variant
 from scripts._stdio import force_utf8_stdio
+from scripts.demo import format_transcript
 
 SIGNIFICANCE_METRICS = ("der", "wder", "cpwer")
 
@@ -120,6 +124,27 @@ def print_significance(baseline_name: str, baseline_results, results_by_variant:
     )
 
 
+def print_transcript_comparison(variant_name: str, entry, transcript, stats, result) -> None:
+    print(f"\n{'=' * 70}")
+    print(f"[{variant_name}] {entry.recording_id}  ({entry.language}, {stats.audio_duration:.1f}s)")
+    print(f"{'=' * 70}")
+
+    if entry.reference_transcript is not None and entry.reference_transcript.utterances:
+        print("\n--- Reference (ground truth) ---")
+        print(format_transcript(entry.reference_transcript, entry.duration))
+    else:
+        print("\n--- Reference (ground truth) ---\n(none available for this recording)")
+
+    print("\n--- Predicted (model output) ---")
+    print(format_transcript(transcript, stats.audio_duration))
+
+    print(
+        f"\n--- Metrics ---\nDER={result.der:.3f}  WDER={result.wder:.3f}  cpWER={result.cpwer:.3f}  "
+        f"WER={result.wer:.3f}  RTF={result.rtf:.2f}  OSD-F1={result.osd_f1:.3f}  "
+        f"Routed={result.routed_fraction * 100:.1f}%"
+    )
+
+
 def run(args: argparse.Namespace) -> None:
     variants = args.variants.split(",") if args.variants else list(ALL_VARIANTS)
     backend = Backend.PRETRAINED if args.backend == "pretrained" else Backend.DUMMY
@@ -149,7 +174,10 @@ def run(args: argparse.Namespace) -> None:
             transcript, stats, predicted_overlap = pipeline.run(
                 audio, sr, recording_id=entry.recording_id, language=language_hint
             )
-            results.append(evaluate_recording(entry, transcript, predicted_overlap, stats))
+            result = evaluate_recording(entry, transcript, predicted_overlap, stats)
+            results.append(result)
+            if args.show_transcript:
+                print_transcript_comparison(variant_name, entry, transcript, stats, result)
 
         results_by_variant[variant_name] = results
         agg = aggregate(results)
@@ -193,6 +221,10 @@ def main():
                               "and at least 2 recordings.")
     parser.add_argument("--baseline", type=str, default="B1",
                          help="Variant to treat as the baseline for --significance (default: B1).")
+    parser.add_argument("--show-transcript", action="store_true",
+                         help="Print the reference (ground truth) and predicted (model output) transcript, "
+                              "plus per-recording metrics, for every recording/variant -- not just the "
+                              "aggregate table. Useful for a single clip: --limit 1 --show-transcript.")
     args = parser.parse_args()
     if args.hf_token is None:
         args.hf_token = os.environ.get("HF_TOKEN")
