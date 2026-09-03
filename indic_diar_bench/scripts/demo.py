@@ -42,6 +42,7 @@ from data.prep.language_codes import (
 from pipeline.audio_utils import load_audio_file
 from pipeline.config import Backend
 from pipeline.variants import build_variant
+from scripts._env import load_env
 from scripts._stdio import force_utf8_stdio
 
 AUDIO_EXTENSIONS = {".wav", ".flac", ".ogg", ".aiff", ".aif", ".mp3", ".m4a", ".aac", ".opus", ".webm"}
@@ -293,6 +294,7 @@ def run(args: argparse.Namespace) -> None:
 
 def main():
     force_utf8_stdio()
+    load_env()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("paths", nargs="*", help="Audio file(s) or folder(s). If omitted, prompts interactively.")
     parser.add_argument("--backend", choices=["dummy", "pretrained"], default="pretrained",

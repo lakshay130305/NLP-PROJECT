@@ -66,6 +66,7 @@ from schemas.types import (
     SpeakerAttributedTranscript,
     Utterance,
 )
+from scripts._env import load_env
 from scripts._stdio import force_utf8_stdio
 
 _CONDITION_NAME_MAP = {
@@ -331,6 +332,7 @@ def run(args: argparse.Namespace) -> None:
 
 def main():
     force_utf8_stdio()
+    load_env()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--languages", nargs="*", default=None,
                          help=f"Languages to test (default: all {len(ALL_LANGUAGES)} in the dataset).")

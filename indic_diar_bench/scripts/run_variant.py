@@ -34,6 +34,7 @@ from eval.significance import bootstrap_ci, cohens_d_paired, paired_test
 from pipeline.config import Backend
 from pipeline.orchestrator import OverlapAwarePipeline
 from pipeline.variants import ALL_VARIANTS, build_variant
+from scripts._env import load_env
 from scripts._stdio import force_utf8_stdio
 from scripts.demo import format_transcript
 
@@ -198,6 +199,7 @@ def run(args: argparse.Namespace) -> None:
 
 def main():
     force_utf8_stdio()
+    load_env()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--synthetic", type=int, default=None, metavar="N",
                          help="Generate N synthetic conversations instead of loading the real dataset.")

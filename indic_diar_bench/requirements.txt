@@ -31,3 +31,6 @@ soundfile
 # Testing
 pytest
 pytest-cov
+
+# Local .env loading (HF_TOKEN etc.)
+python-dotenv
