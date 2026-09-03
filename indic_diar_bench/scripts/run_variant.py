@@ -10,6 +10,9 @@ Usage:
 
   # score against a locally downloaded Parquet shard instead of streaming from the Hub:
   python scripts/run_variant.py --parquet path/to/hindi-test.parquet --backend pretrained --variants PROPOSED
+
+  # does PROPOSED actually beat B1, or is a lower average just noise? (paired significance test)
+  python scripts/run_variant.py --dataset --limit 30 --backend pretrained --variants B1,PROPOSED --significance
 """
 
 from __future__ import annotations
@@ -24,10 +27,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from data.prep.language_codes import language_to_whisper_code
 from data.prep.synthetic import generate_conversation, synthetic_manifest_entry
 from eval.evaluate import aggregate, evaluate_recording
+from eval.significance import bootstrap_ci, cohens_d_paired, paired_test
 from pipeline.config import Backend
 from pipeline.orchestrator import OverlapAwarePipeline
 from pipeline.variants import ALL_VARIANTS, build_variant
 from scripts._stdio import force_utf8_stdio
+
+SIGNIFICANCE_METRICS = ("der", "wder", "cpwer")
 
 
 def iter_synthetic_recordings(n: int):
@@ -55,6 +61,65 @@ def iter_local_parquet_recordings(parquet_path, limit):
     yield from load_indic_diarbench_local(parquet_path, limit=limit)
 
 
+def _paired_values(baseline_results, variant_results, metric: str) -> tuple[list[float], list[float]]:
+    """Aligns two RecordingResult lists by recording_id (order isn't guaranteed to match
+    if either run skipped/reordered a recording) and returns the paired metric values."""
+    variant_by_id = {r.recording_id: r for r in variant_results}
+    baseline_vals, variant_vals = [], []
+    for b in baseline_results:
+        v = variant_by_id.get(b.recording_id)
+        if v is None:
+            continue
+        baseline_vals.append(getattr(b, metric))
+        variant_vals.append(getattr(v, metric))
+    return baseline_vals, variant_vals
+
+
+def print_significance(baseline_name: str, baseline_results, results_by_variant: dict) -> None:
+    print(f"\nSignificance vs baseline '{baseline_name}' (paired Wilcoxon signed-rank test, n={len(baseline_results)}):\n")
+    if len(baseline_results) < 2:
+        print("  (need at least 2 paired recordings to run a significance test -- skipping)")
+        return
+
+    header = (
+        f"{'Variant':<10} {'Metric':<7} {'Baseline':>9} {'Variant':>9} {'95% CI (variant)':>18} "
+        f"{'p-value':>9} {'Cohen d':>9}  Verdict"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for variant_name, variant_results in results_by_variant.items():
+        if variant_name == baseline_name:
+            continue
+        for metric in SIGNIFICANCE_METRICS:
+            baseline_vals, variant_vals = _paired_values(baseline_results, variant_results, metric)
+            if len(baseline_vals) < 2:
+                continue
+            test_result = paired_test(baseline_vals, variant_vals, test="wilcoxon")
+            effect = cohens_d_paired(baseline_vals, variant_vals)
+            ci = bootstrap_ci(variant_vals)
+            baseline_mean = sum(baseline_vals) / len(baseline_vals)
+
+            significant = test_result.p_value < 0.05
+            if not significant:
+                verdict = "no significant difference"
+            elif ci.mean < baseline_mean:
+                verdict = "significant IMPROVEMENT"
+            else:
+                verdict = "significant REGRESSION"
+
+            ci_str = f"[{ci.lower:.3f}, {ci.upper:.3f}]"
+            print(
+                f"{variant_name:<10} {metric:<7} {baseline_mean:>9.3f} {ci.mean:>9.3f} {ci_str:>18} "
+                f"{test_result.p_value:>9.4f} {effect:>9.3f}  {verdict}"
+            )
+
+    print(
+        "\n(p < 0.05 required for significance; Cohen's d magnitude: ~0.2 small, ~0.5 medium, ~0.8 large. "
+        "A lower mean alone is NOT sufficient evidence -- see README's 'what counts as beating B1' discussion.)"
+    )
+
+
 def run(args: argparse.Namespace) -> None:
     variants = args.variants.split(",") if args.variants else list(ALL_VARIANTS)
     backend = Backend.PRETRAINED if args.backend == "pretrained" else Backend.DUMMY
@@ -72,6 +137,8 @@ def run(args: argparse.Namespace) -> None:
     print(header)
     print("-" * len(header))
 
+    results_by_variant: dict[str, list] = {}
+
     for variant_name in variants:
         cfg = build_variant(variant_name, backend=backend, asr_model_size=args.asr_model_size, hf_token=args.hf_token)
         pipeline = OverlapAwarePipeline(cfg)
@@ -84,11 +151,21 @@ def run(args: argparse.Namespace) -> None:
             )
             results.append(evaluate_recording(entry, transcript, predicted_overlap, stats))
 
+        results_by_variant[variant_name] = results
         agg = aggregate(results)
         print(
             f"{variant_name:<10} {agg['der']:>7.3f} {agg['wder']:>7.3f} {agg['cpwer']:>7.3f} "
             f"{agg['wer']:>7.3f} {agg['rtf']:>7.3f} {agg['osd_f1']:>7.3f} {agg['routed_fraction']*100:>7.1f}%"
         )
+
+    if args.significance:
+        if args.baseline not in results_by_variant:
+            print(
+                f"\n(--significance requested but baseline '{args.baseline}' wasn't in --variants "
+                f"{list(results_by_variant)} -- skipping.)"
+            )
+        else:
+            print_significance(args.baseline, results_by_variant[args.baseline], results_by_variant)
 
 
 def main():
@@ -109,6 +186,13 @@ def main():
     parser.add_argument("--hf-token", type=str, default=None,
                          help="HuggingFace token for gated pyannote models (pretrained backend's VAD/OSD only). "
                               "Defaults to the HF_TOKEN environment variable if set.")
+    parser.add_argument("--significance", action="store_true",
+                         help="After the results table, run a paired significance test (Wilcoxon signed-rank, "
+                              "Cohen's d effect size, bootstrap 95%% CI) comparing each variant against "
+                              "--baseline on DER/WDER/cpWER. Requires --baseline to be included in --variants "
+                              "and at least 2 recordings.")
+    parser.add_argument("--baseline", type=str, default="B1",
+                         help="Variant to treat as the baseline for --significance (default: B1).")
     args = parser.parse_args()
     if args.hf_token is None:
         args.hf_token = os.environ.get("HF_TOKEN")

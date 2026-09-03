@@ -44,11 +44,18 @@ def paired_test(baseline: list[float], proposed: list[float], test: str = "wilco
     if len(baseline) < 2:
         return PairedTestResult(statistic=0.0, p_value=1.0, test=test)
 
+    import warnings
+
     from scipy import stats as scipy_stats
 
     if test == "wilcoxon":
         try:
-            stat, p = scipy_stats.wilcoxon(baseline, proposed)
+            with warnings.catch_warnings():
+                # all-zero differences trip a harmless "invalid value in scalar divide" warning
+                # on the way to the ValueError below -- suppress it, the ValueError path already
+                # reports the correct "no effect" result.
+                warnings.filterwarnings("ignore", category=RuntimeWarning, module="scipy.stats._wilcoxon")
+                stat, p = scipy_stats.wilcoxon(baseline, proposed)
         except ValueError:
             # all-zero differences (identical paired values) -- wilcoxon is undefined, report no effect
             return PairedTestResult(statistic=0.0, p_value=1.0, test=test)

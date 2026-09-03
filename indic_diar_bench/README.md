@@ -249,6 +249,39 @@ python scripts/run_variant.py --dataset --languages Hindi --limit 3 --backend pr
 
 Run tests: `python -m pytest tests/ -q`
 
+## What counts as "beating B1"
+
+A lower average DER/cpWER for PROPOSED than B1 is **not**, on its own, evidence that
+overlap-aware routing helps -- it could be noise from a small or lucky sample. `--significance`
+runs the section-18 statistical framework (`eval/significance.py`) on top of the results table:
+
+```bash
+python scripts/run_variant.py --dataset --limit 30 --backend pretrained --variants B1,PROPOSED --significance
+```
+
+For each non-baseline variant, on DER/WDER/cpWER, it pairs per-recording values against
+`--baseline` (default `B1`) on the *same* recordings and reports three things together:
+
+1. **p-value** (paired Wilcoxon signed-rank test) -- p < 0.05 means the difference is unlikely
+   to be random noise across the sample.
+2. **Cohen's d** (paired effect size) -- even a significant p-value can be a tiny, practically
+   meaningless difference; ~0.2 small, ~0.5 medium, ~0.8 large is the usual rule of thumb.
+3. **95% bootstrap CI** on the variant's mean -- a real win typically shows a CI that doesn't
+   sit right on top of the baseline's point estimate.
+
+Only when p < 0.05 *and* the variant's mean is lower does the tool print "significant
+IMPROVEMENT" -- anything else prints "no significant difference" (or "significant REGRESSION"
+if it's significantly worse), regardless of which raw number looks smaller in the table above.
+Needs at least 2 paired recordings, and `--baseline` must be included in `--variants`.
+
+External context for what a "good" absolute number looks like on this dataset: the paper's own
+baseline sweep reports DER/cpWER of 16.0%/38.8% for the dataset authors' own specialized
+pipeline, down to 23.5%/43.7% (AWS Transcribe) and 40.5%/88.6% (AssemblyAI) for general-purpose
+commercial systems -- see arXiv:2607.23808. A general-purpose pipeline on CPU with a small
+Whisper checkpoint landing in the commercial-API range (DER ~30-45%, cpWER ~55-75%) is a
+plausible, respectable result; beating the specialized 16%/38.8% pipeline outright isn't a
+realistic bar for this project's setup.
+
 ## The dummy vs. pretrained backend split
 
 Every ML-backed stage (VAD, OSD, speaker embedding, separation, ASR) has two
