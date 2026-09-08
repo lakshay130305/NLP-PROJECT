@@ -14,19 +14,19 @@ from pipeline.vad import EnergyVAD, PyannoteVAD
 
 def build_vad(cfg: PipelineConfig):
     if cfg.backend == Backend.PRETRAINED:
-        return PyannoteVAD(hf_token=cfg.hf_token)
+        return PyannoteVAD(hf_token=cfg.hf_token, device=cfg.device)
     return EnergyVAD()
 
 
 def build_osd(cfg: PipelineConfig):
     if cfg.backend == Backend.PRETRAINED:
-        return PyannoteOSD(hf_token=cfg.hf_token)
+        return PyannoteOSD(hf_token=cfg.hf_token, device=cfg.device)
     return EnergyRatioOSD()
 
 
 def build_embedder(cfg: PipelineConfig) -> SpeakerEmbedder:
     if cfg.backend == Backend.PRETRAINED:
-        return ECAPAEmbedder()
+        return ECAPAEmbedder(device=cfg.device)
     return MFCCStatsEmbedder()
 
 
@@ -36,11 +36,12 @@ def build_clusterer(cfg: PipelineConfig) -> Clusterer:
 
 def build_separator(cfg: PipelineConfig) -> SeparationModel:
     if cfg.backend == Backend.PRETRAINED:
-        return SepFormerSeparator()
+        return SepFormerSeparator(device=cfg.device)
     return NullSeparator()
 
 
 def build_asr(cfg: PipelineConfig) -> ASRModel:
     if cfg.backend == Backend.PRETRAINED:
-        return FasterWhisperASR(model_size=cfg.asr_model_size)
+        compute_type = "float16" if cfg.device == "cuda" else "int8"
+        return FasterWhisperASR(model_size=cfg.asr_model_size, compute_type=compute_type, device=cfg.device)
     return RegexEnergyASR()

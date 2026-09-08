@@ -157,7 +157,8 @@ def run(args: argparse.Namespace) -> None:
     else:
         recordings = list(iter_real_recordings(args.languages, None, args.limit))
 
-    print(f"Evaluating {len(recordings)} recording(s) x {len(variants)} variant(s), backend={backend.value}\n")
+    device_note = f", device={args.device}" if backend == Backend.PRETRAINED else ""
+    print(f"Evaluating {len(recordings)} recording(s) x {len(variants)} variant(s), backend={backend.value}{device_note}\n")
 
     header = f"{'System':<10} {'DER':>7} {'WDER':>7} {'cpWER':>7} {'WER':>7} {'RTF':>7} {'OSD-F1':>7} {'Routed%':>8}"
     print(header)
@@ -166,7 +167,9 @@ def run(args: argparse.Namespace) -> None:
     results_by_variant: dict[str, list] = {}
 
     for variant_name in variants:
-        cfg = build_variant(variant_name, backend=backend, asr_model_size=args.asr_model_size, hf_token=args.hf_token)
+        cfg = build_variant(
+            variant_name, backend=backend, asr_model_size=args.asr_model_size, hf_token=args.hf_token, device=args.device
+        )
         pipeline = OverlapAwarePipeline(cfg)
 
         results = []
@@ -213,6 +216,9 @@ def main():
     parser.add_argument("--backend", choices=["dummy", "pretrained"], default="dummy",
                          help="dummy = no network/model downloads (default); pretrained = real pyannote/speechbrain/whisper models.")
     parser.add_argument("--asr-model-size", type=str, default="tiny", help="faster-whisper model size (pretrained backend only).")
+    parser.add_argument("--device", choices=["cpu", "cuda"], default=None,
+                         help="Device for pretrained VAD/OSD/embedding/separation/ASR models. "
+                              "Defaults to 'cuda' if available, else 'cpu'.")
     parser.add_argument("--hf-token", type=str, default=None,
                          help="HuggingFace token for gated pyannote models (pretrained backend's VAD/OSD only). "
                               "Defaults to the HF_TOKEN environment variable if set.")
@@ -230,6 +236,11 @@ def main():
     args = parser.parse_args()
     if args.hf_token is None:
         args.hf_token = os.environ.get("HF_TOKEN")
+
+    if args.device is None:
+        import torch
+
+        args.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if args.synthetic is None and not args.dataset and args.parquet is None:
         args.synthetic = 5  # default to a quick synthetic smoke test if nothing was specified

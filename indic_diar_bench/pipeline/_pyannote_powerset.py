@@ -26,11 +26,13 @@ from __future__ import annotations
 import numpy as np
 
 
-def powerset_frame_probs(model, audio: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
+def powerset_frame_probs(
+    model, audio: np.ndarray, sample_rate: int, device: str = "cpu"
+) -> tuple[np.ndarray, np.ndarray]:
     """Returns (frame_times, frame_probs) where frame_probs has shape (n_frames, n_powerset_classes)."""
     import torch
 
-    waveform = torch.from_numpy(np.asarray(audio, dtype=np.float32)).unsqueeze(0)
+    waveform = torch.from_numpy(np.asarray(audio, dtype=np.float32)).unsqueeze(0).to(device)
     with torch.inference_mode():
         logits = model(waveform)
     probs = logits.softmax(dim=-1).squeeze(0).cpu().numpy()

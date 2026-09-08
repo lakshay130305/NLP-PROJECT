@@ -18,10 +18,11 @@ class SepFormerSeparator:
     """Wraps speechbrain's pretrained SepFormer 2-speaker separation model
     (sepformer-wsj02mix, 8kHz). Requires network access to download weights on first use."""
 
-    def __init__(self, source: str = "speechbrain/sepformer-wsj02mix", savedir: str | None = None):
+    def __init__(self, source: str = "speechbrain/sepformer-wsj02mix", savedir: str | None = None, device: str = "cpu"):
         self.source = source
         self.savedir = savedir or ".cache/speechbrain/sepformer"
         self.model_sample_rate = 8000
+        self.device = device
         self._model = None
 
     def _ensure_loaded(self):
@@ -32,7 +33,10 @@ class SepFormerSeparator:
             # see pipeline/embeddings.py::ECAPAEmbedder for why COPY (not the SYMLINK
             # default) is needed on Windows without Developer Mode / admin privileges.
             self._model = SepformerSeparation.from_hparams(
-                source=self.source, savedir=self.savedir, local_strategy=LocalStrategy.COPY
+                source=self.source,
+                savedir=self.savedir,
+                local_strategy=LocalStrategy.COPY,
+                run_opts={"device": self.device},
             )
         return self._model
 
@@ -56,6 +60,7 @@ class SepFormerSeparator:
             waveform = torchaudio.functional.resample(waveform, sample_rate, self.model_sample_rate)
         else:
             waveform = torch.from_numpy(audio).float().unsqueeze(0)
+        waveform = waveform.to(self.device)
 
         with torch.inference_mode():
             est_sources = model.separate_batch(waveform)  # (1, T, n_speakers)

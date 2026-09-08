@@ -58,16 +58,17 @@ class PyannoteOSD:
     pipeline/_pyannote_powerset.py so it stays correct for any base-class/max-class count.
     """
 
-    def __init__(self, model_name: str = "pyannote/segmentation-3.0", hf_token: str | None = None):
+    def __init__(self, model_name: str = "pyannote/segmentation-3.0", hf_token: str | None = None, device: str = "cpu"):
         self.model_name = model_name
         self.hf_token = hf_token
+        self.device = device
         self._model = None
 
     def _ensure_loaded(self):
         if self._model is None:
             from pyannote.audio import Model
 
-            self._model = Model.from_pretrained(self.model_name, use_auth_token=self.hf_token)
+            self._model = Model.from_pretrained(self.model_name, use_auth_token=self.hf_token).to(self.device)
         return self._model
 
     def frame_overlap_probs(
@@ -79,7 +80,7 @@ class PyannoteOSD:
         )
 
         model = self._ensure_loaded()
-        times, probs = powerset_frame_probs(model, audio, sample_rate)
+        times, probs = powerset_frame_probs(model, audio, sample_rate, device=self.device)
         speaker_counts = active_speaker_counts_per_class(model)
 
         overlap_prob = probs[:, speaker_counts >= 2].sum(axis=-1)

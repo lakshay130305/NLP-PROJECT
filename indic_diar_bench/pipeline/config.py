@@ -42,5 +42,6 @@ class PipelineConfig:
 
     asr_model_size: str = "tiny"  # only used when backend == PRETRAINED
     hf_token: str | None = None
+    device: str = "cpu"  # "cuda" to run pretrained VAD/OSD/embedding/separation/ASR on GPU
 
     extra: dict = field(default_factory=dict)

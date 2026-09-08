@@ -36,9 +36,10 @@ class ECAPAEmbedder:
     """Wraps speechbrain's pretrained ECAPA-TDNN speaker encoder (spkrec-ecapa-voxceleb).
     Requires network access to download weights on first use."""
 
-    def __init__(self, source: str = "speechbrain/spkrec-ecapa-voxceleb", savedir: str | None = None):
+    def __init__(self, source: str = "speechbrain/spkrec-ecapa-voxceleb", savedir: str | None = None, device: str = "cpu"):
         self.source = source
         self.savedir = savedir or ".cache/speechbrain/ecapa"
+        self.device = device
         self._model = None
 
     def _ensure_loaded(self):
@@ -50,7 +51,10 @@ class ECAPAEmbedder:
             # privileges on Windows and fails with OSError: [WinError 1314] otherwise
             # (confirmed this session); COPY works everywhere at the cost of extra disk space.
             self._model = EncoderClassifier.from_hparams(
-                source=self.source, savedir=self.savedir, local_strategy=LocalStrategy.COPY
+                source=self.source,
+                savedir=self.savedir,
+                local_strategy=LocalStrategy.COPY,
+                run_opts={"device": self.device},
             )
         return self._model
 
@@ -63,7 +67,7 @@ class ECAPAEmbedder:
         if sample_rate != 16000:
             audio = _resample(audio, sample_rate, 16000)
         audio = pad_to_min_length(audio, 16000, min_seconds=0.5)
-        waveform = torch.from_numpy(audio).float().unsqueeze(0)
+        waveform = torch.from_numpy(audio).float().unsqueeze(0).to(self.device)
         with torch.inference_mode():
             embedding = model.encode_batch(waveform)
         return embedding.squeeze().cpu().numpy()

@@ -57,18 +57,23 @@ class PyannoteVAD:
     on first use."""
 
     def __init__(
-        self, model_name: str = "pyannote/segmentation-3.0", hf_token: str | None = None, speech_threshold: float = 0.5
+        self,
+        model_name: str = "pyannote/segmentation-3.0",
+        hf_token: str | None = None,
+        speech_threshold: float = 0.5,
+        device: str = "cpu",
     ):
         self.model_name = model_name
         self.hf_token = hf_token
         self.speech_threshold = speech_threshold
+        self.device = device
         self._model = None
 
     def _ensure_loaded(self):
         if self._model is None:
             from pyannote.audio import Model
 
-            self._model = Model.from_pretrained(self.model_name, use_auth_token=self.hf_token)
+            self._model = Model.from_pretrained(self.model_name, use_auth_token=self.hf_token).to(self.device)
         return self._model
 
     def detect(self, audio: np.ndarray, sample_rate: int) -> list[SpeechSegment]:
@@ -78,7 +83,7 @@ class PyannoteVAD:
         )
 
         model = self._ensure_loaded()
-        times, probs = powerset_frame_probs(model, audio, sample_rate)
+        times, probs = powerset_frame_probs(model, audio, sample_rate, device=self.device)
         speaker_counts = active_speaker_counts_per_class(model)
 
         speech_prob = probs[:, speaker_counts >= 1].sum(axis=-1)
