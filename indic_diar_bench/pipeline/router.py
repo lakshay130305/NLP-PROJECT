@@ -53,26 +53,55 @@ class SelectiveRouter:
 
         decisions: list[RoutingDecision] = []
         for seg in vad_segments:
-            mean_p = self._mean_prob_in_range(osd_times, osd_probs, seg.start, seg.end)
-            is_overlap = self._overlaps_any(seg, overlap_regions)
-            is_uncertain = abs(mean_p - self.tau) < self.uncertainty_band
+            # Previously one route decision was made for the WHOLE vad segment ("overlap" if
+            # ANY overlap region touched it anywhere), so a 10s segment with 0.3s of overlap
+            # sent the entire 10s to the separation branch and got transcribed twice (once per
+            # separated stream) -- against section 6.1's own stated goal of only invoking
+            # separation "where actually needed". Split each segment at overlap-region
+            # boundaries so only the actually-overlapping sub-interval is routed to
+            # separation; sub-segments that don't touch any overlap region are left whole
+            # (this is a no-op change for the common case of a segment that's fully inside or
+            # fully outside every overlap region).
+            for sub in self._split_at_boundaries(seg, overlap_regions):
+                mean_p = self._mean_prob_in_range(osd_times, osd_probs, sub.start, sub.end)
+                is_overlap = self._overlaps_any(sub, overlap_regions)
+                is_uncertain = abs(mean_p - self.tau) < self.uncertainty_band
 
-            # Branch selection (which work actually runs) is driven by `is_overlap` in
-            # BOTH modes: a segment's mean OSD probability dilutes to near-zero once any
-            # short overlap sub-interval is averaged across a multi-second VAD segment
-            # (confirmed on real audio: mean-probability routing sent 0% of a recording
-            # to the separation branch despite the OSD correctly finding ~7.5% of frames
-            # as overlapping). Hard vs. soft only differs in `overlap_weight`: hard uses a
-            # binary 0/1 signal, soft carries the continuous probability for downstream
-            # blending per h_t = (1-p_t) h_t^single + p_t h_t^overlap (section 6.3).
-            route = "overlap" if is_overlap else "single"
-            if self.mode == RoutingMode.HARD:
-                weight = 1.0 if is_overlap else 0.0
-            else:
-                weight = float(np.clip(mean_p, 0.0, 1.0))
+                # Branch selection (which work actually runs) is driven by `is_overlap` in
+                # BOTH modes: a sub-segment's mean OSD probability dilutes to near-zero once
+                # any short overlap sub-interval is averaged across a multi-second window
+                # (confirmed on real audio: mean-probability routing sent 0% of a recording
+                # to the separation branch despite the OSD correctly finding ~7.5% of frames
+                # as overlapping). Hard vs. soft only differs in `overlap_weight`: hard uses a
+                # binary 0/1 signal, soft carries the continuous probability for downstream
+                # blending per h_t = (1-p_t) h_t^single + p_t h_t^overlap (section 6.3).
+                route = "overlap" if is_overlap else "single"
+                if self.mode == RoutingMode.HARD:
+                    weight = 1.0 if is_overlap else 0.0
+                else:
+                    weight = float(np.clip(mean_p, 0.0, 1.0))
 
-            decisions.append(RoutingDecision(segment=seg, route=route, overlap_weight=weight, is_uncertain=is_uncertain))
+                decisions.append(RoutingDecision(segment=sub, route=route, overlap_weight=weight, is_uncertain=is_uncertain))
         return decisions
+
+    @staticmethod
+    def _split_at_boundaries(seg: SpeechSegment, regions: list[OverlapRegion]) -> list[SpeechSegment]:
+        """Cut `seg` at every overlap-region start/end that falls strictly inside it, so each
+        piece is either fully inside or fully outside every region. Pieces shorter than 20ms
+        are dropped (routing/ASR noise, not a real sub-turn)."""
+        cuts = {seg.start, seg.end}
+        for r in regions:
+            if seg.start < r.start < seg.end:
+                cuts.add(r.start)
+            if seg.start < r.end < seg.end:
+                cuts.add(r.end)
+        points = sorted(cuts)
+        pieces = [
+            SpeechSegment(a, b, seg.speaker)
+            for a, b in zip(points, points[1:])
+            if b - a >= 0.02
+        ]
+        return pieces or [seg]
 
     @staticmethod
     def _mean_prob_in_range(times: np.ndarray, probs: np.ndarray, start: float, end: float) -> float:

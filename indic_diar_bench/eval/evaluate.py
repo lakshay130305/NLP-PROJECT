@@ -37,6 +37,13 @@ class RecordingResult:
     routed_fraction: float
 
 
+DER_COLLAR = 0.25  # seconds; matches the forgiveness collar used by the external baselines
+# this project compares against (README's "beating B1" section, arXiv:2607.23808) -- human
+# boundary annotations are noisy at the +-100-200ms level, and scoring with collar=0.0 (the
+# previous default here) charges every recording for that annotation noise on top of real
+# error, making our DER not apples-to-apples with the numbers we're benchmarking against.
+
+
 def evaluate_recording(
     entry: ManifestEntry,
     predicted_transcript: SpeakerAttributedTranscript,
@@ -47,7 +54,7 @@ def evaluate_recording(
     predicted_segments = [
         SpeechSegment(u.start, u.end, u.speaker) for u in predicted_transcript.utterances
     ]
-    der_result = compute_der(reference_segments, predicted_segments)
+    der_result = compute_der(reference_segments, predicted_segments, collar=DER_COLLAR)
 
     ref_words = [w for u in (entry.reference_transcript.utterances if entry.reference_transcript else []) for w in u.words]
     hyp_words = [w for u in predicted_transcript.utterances for w in u.words]

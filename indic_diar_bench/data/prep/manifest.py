@@ -195,11 +195,27 @@ def _row_to_entry(row: dict, condition: AcousticCondition):
         speaker = seg["speaker_id"]
         start, end = float(seg["start_time"]), float(seg["end_time"])
         segments.append(SpeechSegment(start=start, end=end, speaker=speaker))
-        # transcript is a segment-level string; treat it as one "word" token spanning the
-        # segment for WDER/cpWER purposes unless/until forced word-alignment is added
+        # transcript is a segment-level string. Previously this was kept as ONE WordToken
+        # spanning the whole segment, which silently broke both word-level metrics: WDER's
+        # denominator (eval/wder.py) is `len(reference)` == reference WORD count, and cpWER's
+        # reference side (eval/cpwer.py) is the concatenation of reference WORD tokens -- with
+        # one token per segment instead of per word, both were scored against a reference token
+        # count of "number of segments" while the hypothesis side (faster-whisper) legitimately
+        # emits one token per real word, producing structurally invalid ratios (WDER > 1,
+        # cpWER ~9-12) that aren't comparable to any external baseline or to this project's own
+        # plain-WER metric (which does word-split hypothesis/reference text correctly and reports
+        # sane numbers on the same data). Split on whitespace and distribute timestamps evenly
+        # across the segment span -- an approximation (no forced alignment), but one that puts
+        # both sides of every word-level metric in the same units.
         text = seg.get("transcript", "").strip()
         if text:
-            words.append(WordToken(text=text, start=start, end=end, speaker=speaker))
+            tokens = text.split()
+            span = max(end - start, 1e-6)
+            step = span / len(tokens)
+            for i, tok in enumerate(tokens):
+                w_start = start + i * step
+                w_end = start + (i + 1) * step
+                words.append(WordToken(text=tok, start=w_start, end=w_end, speaker=speaker))
 
     reference_transcript = SpeakerAttributedTranscript(
         recording_id=row["recording_id"],
