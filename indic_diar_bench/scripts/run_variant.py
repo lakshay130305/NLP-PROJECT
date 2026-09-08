@@ -190,6 +190,20 @@ def run(args: argparse.Namespace) -> None:
             f"{agg['wer']:>7.3f} {agg['rtf']:>7.3f} {agg['osd_f1']:>7.3f} {agg['routed_fraction']*100:>7.1f}%"
         )
 
+    print("\nDER breakdown (fraction of total reference speech time) + OSD precision/recall:\n")
+    bd_header = (
+        f"{'System':<10} {'DER':>7} {'Missed':>7} {'FalseAl':>7} {'Confus':>7} "
+        f"{'OSD-P':>7} {'OSD-R':>7} {'OSD-F1':>7}"
+    )
+    print(bd_header)
+    print("-" * len(bd_header))
+    for variant_name, results in results_by_variant.items():
+        agg = aggregate(results)
+        print(
+            f"{variant_name:<10} {agg['der']:>7.3f} {agg['der_missed']:>7.3f} {agg['der_false_alarm']:>7.3f} "
+            f"{agg['der_confusion']:>7.3f} {agg['osd_precision']:>7.3f} {agg['osd_recall']:>7.3f} {agg['osd_f1']:>7.3f}"
+        )
+
     if args.significance:
         if args.baseline not in results_by_variant:
             print(

@@ -24,6 +24,9 @@ from schemas.types import (
 class RecordingResult:
     recording_id: str
     der: float
+    der_missed: float
+    der_false_alarm: float
+    der_confusion: float
     wder: float
     cpwer: float
     wer: float
@@ -59,9 +62,13 @@ def evaluate_recording(
     ref_overlap_regions = derive_overlap_regions(reference_segments)
     osd_result = compute_osd_metrics(ref_overlap_regions, predicted_overlap_regions)
 
+    ref_time = der_result.total_reference_time or 1.0
     return RecordingResult(
         recording_id=entry.recording_id,
         der=der_result.der,
+        der_missed=der_result.missed_speech / ref_time,
+        der_false_alarm=der_result.false_alarm / ref_time,
+        der_confusion=der_result.speaker_confusion / ref_time,
         wder=wder_result.wder,
         cpwer=cpwer_result.cpwer,
         wer=wer_result.wer,
@@ -76,5 +83,8 @@ def evaluate_recording(
 def aggregate(results: list[RecordingResult]) -> dict[str, float]:
     if not results:
         return {}
-    fields = ["der", "wder", "cpwer", "wer", "rtf", "osd_precision", "osd_recall", "osd_f1", "routed_fraction"]
+    fields = [
+        "der", "der_missed", "der_false_alarm", "der_confusion", "wder", "cpwer", "wer", "rtf",
+        "osd_precision", "osd_recall", "osd_f1", "routed_fraction",
+    ]
     return {f: sum(getattr(r, f) for r in results) / len(results) for f in fields}
