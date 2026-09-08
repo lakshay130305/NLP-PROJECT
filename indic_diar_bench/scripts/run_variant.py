@@ -55,9 +55,13 @@ def iter_synthetic_recordings(n: int):
 
 
 def iter_real_recordings(languages, conditions, limit):
-    from data.prep.manifest import load_indic_diarbench
+    """Round-robins across the requested languages (defaulting to all 22) so a capped run
+    gets broad language coverage instead of exhausting one language before starting the next
+    -- `load_indic_diarbench` alone iterates languages sequentially and would otherwise fill
+    `limit` entirely from the first language in the list."""
+    from data.prep.manifest import ALL_LANGUAGES, round_robin_recordings
 
-    yield from load_indic_diarbench(languages=languages, conditions=conditions, limit=limit)
+    yield from round_robin_recordings(languages or ALL_LANGUAGES, conditions, limit=limit)
 
 
 def iter_local_parquet_recordings(parquet_path, limit):

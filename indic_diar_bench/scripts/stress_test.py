@@ -50,13 +50,12 @@ import json
 import sys
 import time
 import traceback
-from itertools import cycle
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from data.prep.language_codes import language_to_whisper_code
-from data.prep.manifest import ALL_LANGUAGES
+from data.prep.manifest import ALL_LANGUAGES, round_robin_recordings
 from eval.evaluate import evaluate_recording
 from pipeline.config import Backend
 from pipeline.variants import build_variant
@@ -116,36 +115,6 @@ def truncate_recording(entry: ManifestEntry, audio, sample_rate: int, max_second
         reference_transcript=truncated_transcript,
     )
     return truncated_entry, truncated_audio
-
-
-def round_robin_recordings(languages: list[str], conditions: list[AcousticCondition] | None):
-    """Interleaves per-language streaming iterators so the run gets broad language
-    coverage early instead of exhausting one language before starting the next.
-
-    Network/stream errors (confirmed this session: a HuggingFace CDN read timing out mid
-    -download of a large parquet shard escalated into a MemoryError deep inside `requests`,
-    which is NOT a StopIteration and was NOT caught here originally -- it propagated straight
-    out of this generator and crashed the entire multi-hour run after only 5 recordings).
-    Any exception from a per-language sub-iterator now just drops that language from the
-    rotation (logged, not silent) so a transient network failure on one language can't take
-    down the whole run.
-    """
-    from data.prep.manifest import load_indic_diarbench
-
-    iterators = {lang: load_indic_diarbench(languages=[lang], conditions=conditions, streaming=True) for lang in languages}
-    active = dict(iterators)
-    for lang in cycle(list(active.keys())):
-        if not active:
-            return
-        if lang not in active:
-            continue
-        try:
-            yield next(active[lang])
-        except StopIteration:
-            active.pop(lang, None)
-        except Exception as e:  # noqa: BLE001 -- a broken stream for one language must not kill the whole run
-            print(f"  (stream error for {lang}, dropping it from rotation: {type(e).__name__}: {e})")
-            active.pop(lang, None)
 
 
 def append_jsonl(path: Path, record: dict) -> None:

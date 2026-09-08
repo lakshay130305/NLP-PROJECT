@@ -17,6 +17,7 @@ schema so it's a drop-in match for the synthetic generator's output shape.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from itertools import cycle
 
 import numpy as np
 
@@ -72,12 +73,22 @@ def load_indic_diarbench(
         # `soundfile` (already a dependency) decodes the raw WAV bytes directly below,
         # with no FFmpeg/torchcodec dependency at all.
         ds = ds.cast_column("audio", Audio(decode=False))
+        # The published parquet shards contain duplicate rows for some recording_ids (e.g.
+        # Hindi's test split has 94 rows but only 64 distinct recording_ids -- confirmed via a
+        # direct pyarrow read of the raw file, so this is a source-data issue, not a streaming
+        # artifact). Skip repeats so callers get distinct recordings up to `limit`, which
+        # matters for anything that treats each yielded item as an independent sample (e.g.
+        # paired significance testing).
+        seen_ids: set[str] = set()
         for row in ds:
             condition = _CONDITION_MAP.get(row["dataset_type"])
             if condition is None:
                 continue
             if conditions and condition not in conditions:
                 continue
+            if row["recording_id"] in seen_ids:
+                continue
+            seen_ids.add(row["recording_id"])
 
             entry, audio, sr = _row_to_entry(row, condition)
             yield entry, audio, sr
@@ -85,6 +96,44 @@ def load_indic_diarbench(
             count += 1
             if limit is not None and count >= limit:
                 return
+
+
+def round_robin_recordings(
+    languages: list[str], conditions: list[AcousticCondition] | None = None, limit: int | None = None
+) -> Iterator[tuple[ManifestEntry, np.ndarray, int]]:
+    """Interleaves per-language streaming iterators so a capped run gets broad language
+    coverage instead of exhausting one language before starting the next (which is what
+    `load_indic_diarbench` does when given multiple languages plus a `limit`, since it
+    iterates languages sequentially and stops as soon as the global count is reached).
+
+    Network/stream errors (confirmed in an earlier session: a HuggingFace CDN read timing out
+    mid-download of a large parquet shard escalated into a MemoryError deep inside `requests`,
+    which is NOT a StopIteration and was NOT caught here originally -- it propagated straight
+    out of this generator and crashed the entire multi-hour run after only 5 recordings).
+    Any exception from a per-language sub-iterator now just drops that language from the
+    rotation (logged, not silent) so a transient network failure on one language can't take
+    down the whole run.
+    """
+    iterators = {lang: load_indic_diarbench(languages=[lang], conditions=conditions, streaming=True) for lang in languages}
+    active = dict(iterators)
+    count = 0
+    for lang in cycle(list(active.keys())):
+        if not active:
+            return
+        if lang not in active:
+            continue
+        try:
+            yield next(active[lang])
+        except StopIteration:
+            active.pop(lang, None)
+            continue
+        except Exception as e:  # noqa: BLE001 -- a broken stream for one language must not kill the whole run
+            print(f"  (stream error for {lang}, dropping it from rotation: {type(e).__name__}: {e})")
+            active.pop(lang, None)
+            continue
+        count += 1
+        if limit is not None and count >= limit:
+            return
 
 
 def load_indic_diarbench_local(
@@ -101,12 +150,16 @@ def load_indic_diarbench_local(
     ds = ds.cast_column("audio", Audio(decode=False))
 
     count = 0
+    seen_ids: set[str] = set()
     for row in ds:
         condition = _CONDITION_MAP.get(row["dataset_type"])
         if condition is None:
             continue
         if conditions and condition not in conditions:
             continue
+        if row["recording_id"] in seen_ids:
+            continue
+        seen_ids.add(row["recording_id"])
 
         entry, audio, sr = _row_to_entry(row, condition)
         yield entry, audio, sr
