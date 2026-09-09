@@ -277,6 +277,44 @@ Every results table now also carries `DER-ov` and `DER-no`: DER scored only insi
 ground-truth overlap regions, and only outside them. An aggregate DER cannot distinguish a
 system that fixes overlap from one that moves error around, which is the whole question here.
 
+### Long runs: persistence, resume, and pooling
+
+A full-corpus evaluation cannot be one invocation. `run_variant.py` materializes every
+decoded recording in memory before processing (`recordings = list(...)`), so the whole
+~108 h corpus at once is ~25 GB of audio plus millions of reference `WordToken` objects.
+Run **one job per language** (~1.1 GB each) and pool afterwards:
+
+```bash
+# each language writes its own per-recording JSONL as it goes
+python scripts/run_variant.py --dataset --languages Telugu --limit 100000 \
+  --backend pretrained --asr-model-size small --device cuda \
+  --variants B1,B2,B3,B4,B5,PROPOSED \
+  --save-results results/Telugu.jsonl --resume
+
+# ...then pool every language into the corpus-wide tables + significance test
+python scripts/pool_results.py "results/*.jsonl" --breakdown
+```
+
+`--save-results` appends one JSON line per (variant, recording) and flushes immediately.
+`--resume` skips pairs already in that file, so a multi-day run restarts from where it
+died rather than from nothing. A truncated final line from a killed process is skipped
+with a warning, not treated as a corrupt file.
+
+**Why pooling needs the JSONL and not the logs.** Two things in the results are properties
+of the whole corpus and cannot be reconstructed from per-language summary tables:
+
+- `aggregate()` means over *recordings*. Averaging 22 per-language means silently reweights
+  every language to equal size regardless of how many recordings it holds. With Hindi at
+  n=10, DER 0.50 and Santali at n=2, DER 0.80, pooling gives 0.55 and averaging the two
+  language rows gives 0.65 — same data, different answer, and only the first is what the
+  results table reports.
+- The paired Wilcoxon test needs each recording's baseline-vs-variant pair. Printed
+  aggregates do not contain them at any level of post-processing.
+
+`pool_results.py` reads the raw per-recording rows, so both come out right by construction.
+It also warns when variants cover different numbers of recordings, since that makes a
+side-by-side reading of the pooled rows unsound.
+
 **SI-SDR caveat.** Separation quality is only directly scorable where ground-truth isolated
 sources exist. Indic DiarBench ships mixed audio plus an RTTM and no per-speaker stems, so
 `--si-sdr` reports nothing scorable on `--dataset` runs and says so rather than printing a

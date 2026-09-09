@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from data.prep.language_codes import language_to_whisper_code
 from data.prep.synthetic import generate_conversation, synthetic_manifest_entry
 from eval.evaluate import aggregate, aggregate_by, evaluate_recording
+from eval.results_io import load_completed, open_results_file, write_result
 from eval.significance import bootstrap_ci, cohens_d_paired, paired_test
 from pipeline.config import Backend
 from pipeline.orchestrator import OverlapAwarePipeline
@@ -289,6 +290,14 @@ def run(args: argparse.Namespace) -> None:
         f"backend={backend.value}{device_note}{tau_note}\n"
     )
 
+    results_by_variant: dict[str, list] = {}
+
+    completed = load_completed(args.save_results) if (args.resume and args.save_results) else {}
+    if completed:
+        print(f"Resuming: {sum(len(v) for v in completed.values())} (variant, recording) pair(s) "
+              f"already on disk in {args.save_results} will be reused, not recomputed.\n")
+    results_handle = open_results_file(args.save_results) if args.save_results else None
+
     header = (
         f"{'System':<12} {'DER':>7} {'DER-ov':>7} {'DER-no':>7} {'WDER':>7} {'cpWER':>7} "
         f"{'WER':>7} {'RTF':>7} {'OSD-F1':>7} {'Routed%':>8}"
@@ -296,29 +305,44 @@ def run(args: argparse.Namespace) -> None:
     print(header)
     print("-" * len(header))
 
-    results_by_variant: dict[str, list] = {}
+    try:
+        for label, cfg in jobs:
+            already_done = completed.get(label, {})
+            pipeline = None  # built lazily: a fully-resumed variant must not load models
 
-    for label, cfg in jobs:
-        pipeline = OverlapAwarePipeline(cfg)
+            results = []
+            for entry, audio, sr in recordings:
+                prior = already_done.get(entry.recording_id)
+                if prior is not None:
+                    results.append(prior)
+                    continue
 
-        results = []
-        for entry, audio, sr in recordings:
-            language_hint = language_to_whisper_code(entry.language) if backend == Backend.PRETRAINED else None
-            transcript, stats, predicted_overlap = pipeline.run(
-                audio, sr, recording_id=entry.recording_id, language=language_hint
+                if pipeline is None:
+                    pipeline = OverlapAwarePipeline(cfg)
+                language_hint = language_to_whisper_code(entry.language) if backend == Backend.PRETRAINED else None
+                transcript, stats, predicted_overlap = pipeline.run(
+                    audio, sr, recording_id=entry.recording_id, language=language_hint
+                )
+                result = evaluate_recording(entry, transcript, predicted_overlap, stats)
+                results.append(result)
+                if results_handle is not None:
+                    write_result(results_handle, label, result)
+                if args.show_transcript:
+                    print_transcript_comparison(label, entry, transcript, stats, result)
+
+            results_by_variant[label] = results
+            # print each variant's row as it finishes rather than at the end -- on a run
+            # measured in days, output you only see after everything completes is useless
+            agg = aggregate(results)
+            print(
+                f"{label:<12} {_fmt(agg['der'])} {_fmt(agg['der_overlap'])} {_fmt(agg['der_nonoverlap'])} "
+                f"{_fmt(agg['wder'])} {_fmt(agg['cpwer'])} {_fmt(agg['wer'])} {_fmt(agg['rtf'])} "
+                f"{_fmt(agg['osd_f1'])} {agg['routed_fraction'] * 100:>7.1f}%",
+                flush=True,
             )
-            result = evaluate_recording(entry, transcript, predicted_overlap, stats)
-            results.append(result)
-            if args.show_transcript:
-                print_transcript_comparison(label, entry, transcript, stats, result)
-
-        results_by_variant[label] = results
-        agg = aggregate(results)
-        print(
-            f"{label:<12} {_fmt(agg['der'])} {_fmt(agg['der_overlap'])} {_fmt(agg['der_nonoverlap'])} "
-            f"{_fmt(agg['wder'])} {_fmt(agg['cpwer'])} {_fmt(agg['wer'])} {_fmt(agg['rtf'])} "
-            f"{_fmt(agg['osd_f1'])} {agg['routed_fraction'] * 100:>7.1f}%"
-        )
+    finally:
+        if results_handle is not None:
+            results_handle.close()
 
     print("\nDER breakdown (fraction of total reference speech time) + OSD precision/recall:\n")
     bd_header = (
@@ -395,11 +419,23 @@ def main():
                          help="Score separation quality directly (SI-SDR) against ground-truth isolated "
                               "sources. Only meaningful on --synthetic runs: the real dataset ships the "
                               "mixture only. Holds separated audio in memory, hence off by default.")
+    parser.add_argument("--save-results", type=str, default=None, metavar="PATH",
+                         help="Append one JSON line per (variant, recording) to PATH as the run "
+                              "proceeds. Required for --resume, and required to pool several runs "
+                              "into a corpus-wide table or a pooled significance test later "
+                              "(scripts/pool_results.py) -- the printed tables are means, and the "
+                              "per-recording values behind them cannot be recovered from them.")
+    parser.add_argument("--resume", action="store_true",
+                         help="Skip any (variant, recording) pair already present in --save-results "
+                              "and reuse its stored result. Lets a multi-day evaluation restart from "
+                              "where it died instead of from nothing.")
     parser.add_argument("--show-transcript", action="store_true",
                          help="Print the reference (ground truth) and predicted (model output) transcript, "
                               "plus per-recording metrics, for every recording/variant -- not just the "
                               "aggregate table. Useful for a single clip: --limit 1 --show-transcript.")
     args = parser.parse_args()
+    if args.resume and not args.save_results:
+        parser.error("--resume needs --save-results PATH: there is nowhere to resume from without it.")
     if args.breakdown is not None and not args.breakdown:
         args.breakdown = list(BREAKDOWN_KEYS)  # bare --breakdown means "all of them"
     if args.hf_token is None:
