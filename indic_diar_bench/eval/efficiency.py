@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -12,6 +13,10 @@ class EfficiencyStats:
     separator_calls: int = 0
     separator_audio_seconds: float = 0.0
     stage_times: dict[str, float] = field(default_factory=dict)
+    # (start_s, end_s, streams) per separated segment -- only populated when
+    # PipelineConfig.collect_separated_audio is on, since holding every separated
+    # waveform for a 150-recording run is expensive and only SI-SDR scoring needs it.
+    separated_segments: list[tuple[float, float, list[Any]]] = field(default_factory=list)
 
     @property
     def rtf(self) -> float:
@@ -31,3 +36,6 @@ class EfficiencyStats:
     def record_separator_call(self, segment_duration: float) -> None:
         self.separator_calls += 1
         self.separator_audio_seconds += segment_duration
+
+    def record_separated_audio(self, start: float, end: float, streams: list[Any]) -> None:
+        self.separated_segments.append((start, end, streams))

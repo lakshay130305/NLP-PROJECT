@@ -249,6 +249,42 @@ python scripts/run_variant.py --dataset --languages Hindi --limit 3 --backend pr
 
 Run tests: `python -m pytest tests/ -q`
 
+### Analysis flags
+
+The pooled results table answers "is PROPOSED better overall". These flags answer the
+questions the paper actually has to report -- where the difference lives, and at what
+threshold.
+
+```bash
+# per-stratum tables: language, acoustic condition, speaker count, overlap intensity.
+# Bare --breakdown gives all four; name keys to pick a subset.
+python scripts/run_variant.py --dataset --limit 150 --backend pretrained \
+  --variants B1,B2,B3,B4,B5,PROPOSED --breakdown --significance
+
+# OSD threshold sweep in one job. OSD-using variants run once per tau (rows are labelled
+# VARIANT@TAU); variants without OSD run once, since tau cannot change their output.
+python scripts/run_variant.py --dataset --limit 150 --backend pretrained \
+  --variants B1,PROPOSED --osd-tau 0.3,0.5,0.7
+
+# restrict to one acoustic condition (near_field | far_field | in_the_wild):
+python scripts/run_variant.py --dataset --limit 50 --conditions near_field --backend pretrained
+
+# separation quality (SI-SDR) -- synthetic only, see the caveat below:
+python scripts/run_variant.py --synthetic 20 --variants B1,B4,PROPOSED --si-sdr
+```
+
+Every results table now also carries `DER-ov` and `DER-no`: DER scored only inside the
+ground-truth overlap regions, and only outside them. An aggregate DER cannot distinguish a
+system that fixes overlap from one that moves error around, which is the whole question here.
+
+**SI-SDR caveat.** Separation quality is only directly scorable where ground-truth isolated
+sources exist. Indic DiarBench ships mixed audio plus an RTTM and no per-speaker stems, so
+`--si-sdr` reports nothing scorable on `--dataset` runs and says so rather than printing a
+misleading number. On `--synthetic` runs the generator returns the per-speaker tracks it
+mixed, so the metric works there and is useful as a regression check: a passthrough
+(non-)separator scores the expected ~0 dB, making a silently disabled separation stage
+visible without having to infer it from a downstream metric.
+
 ## What counts as "beating B1"
 
 A lower average DER/cpWER for PROPOSED than B1 is **not**, on its own, evidence that

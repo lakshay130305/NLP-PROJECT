@@ -12,7 +12,7 @@ be exercised end-to-end without needing real speech audio or network access.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -34,6 +34,10 @@ class SyntheticConversation:
     audio: np.ndarray
     sample_rate: int
     segments: list[SpeechSegment]  # ground truth, may overlap in time
+    # per-speaker isolated tracks, same length as `audio`, summing to it. These are the
+    # ground-truth stems SI-SDR needs (eval/separation_quality.py); the real dataset has no
+    # equivalent, so synthetic runs are the only place separation quality is directly scorable.
+    source_tracks: dict[str, np.ndarray] = field(default_factory=dict)
 
 
 def _tone_burst(freq: float, duration: float, sample_rate: int, amplitude: float = 0.3) -> np.ndarray:
@@ -83,15 +87,19 @@ def generate_conversation(
 
     total_duration = cursor + 0.3
     n_samples = int(total_duration * SAMPLE_RATE)
-    audio = np.zeros(n_samples, dtype=np.float32)
+    # build each speaker's isolated track first, then sum -- the mixture is by construction
+    # the sum of the stems, which is exactly the assumption SI-SDR scoring makes
+    source_tracks = {spk: np.zeros(n_samples, dtype=np.float32) for spk in speakers}
     for seg in segments:
         tone = _tone_burst(freqs[seg.speaker], seg.duration, SAMPLE_RATE)
         start_idx = int(seg.start * SAMPLE_RATE)
         end_idx = min(n_samples, start_idx + len(tone))
-        audio[start_idx:end_idx] += tone[: end_idx - start_idx]
+        source_tracks[seg.speaker][start_idx:end_idx] += tone[: end_idx - start_idx]
 
-    audio = np.clip(audio, -1.0, 1.0)
-    return SyntheticConversation(audio=audio, sample_rate=SAMPLE_RATE, segments=segments)
+    audio = np.clip(sum(source_tracks.values()), -1.0, 1.0).astype(np.float32)
+    return SyntheticConversation(
+        audio=audio, sample_rate=SAMPLE_RATE, segments=segments, source_tracks=source_tracks
+    )
 
 
 def synthetic_manifest_entry(
@@ -124,4 +132,6 @@ def synthetic_manifest_entry(
         duration=duration,
         reference_segments=conversation.segments,
         reference_transcript=reference_transcript,
+        source_tracks=dict(conversation.source_tracks),
+        sample_rate=conversation.sample_rate,
     )

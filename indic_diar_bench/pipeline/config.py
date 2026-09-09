@@ -43,5 +43,9 @@ class PipelineConfig:
     asr_model_size: str = "tiny"  # only used when backend == PRETRAINED
     hf_token: str | None = None
     device: str = "cpu"  # "cuda" to run pretrained VAD/OSD/embedding/separation/ASR on GPU
+    # keep every separated waveform on the EfficiencyStats so SI-SDR can score it; off by
+    # default because it holds the whole separated output of a run in memory and is only
+    # useful when the recording ships ground-truth isolated sources to score against
+    collect_separated_audio: bool = False
 
     extra: dict = field(default_factory=dict)

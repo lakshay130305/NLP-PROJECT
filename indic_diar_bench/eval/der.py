@@ -10,6 +10,7 @@ torch/pyannote aren't importable yet).
 
 from __future__ import annotations
 
+import bisect
 import itertools
 from dataclasses import dataclass
 
@@ -87,11 +88,28 @@ def _hungarian_max(matrix: list[list[float]]) -> tuple[list[int], list[int]]:
 
 
 def compute_der(
-    reference: list[SpeechSegment], hypothesis: list[SpeechSegment], collar: float = 0.0
+    reference: list[SpeechSegment],
+    hypothesis: list[SpeechSegment],
+    collar: float = 0.0,
+    score_regions: list[tuple[float, float]] | None = None,
 ) -> DERResult:
     """Compute DER via a fine-grained frame sweep. `collar` (seconds) excludes a margin
-    around reference segment boundaries from scoring, matching common DER conventions."""
-    total_ref_time = sum(s.duration for s in reference)
+    around reference segment boundaries from scoring, matching common DER conventions.
+
+    `score_regions`, if given, restricts scoring to those time intervals: only slices whose
+    midpoint falls inside a region are charged, and the denominator is the reference speech
+    time inside those regions. This is what makes an overlap-vs-non-overlap DER split
+    possible (pass the reference overlap regions, or their complement) -- an aggregate DER
+    cannot say whether a system's error is concentrated in the overlapping regions it was
+    designed for or spread across the easy ones."""
+    regions = _merge_regions(score_regions) if score_regions is not None else None
+    if regions is not None and not regions:
+        return DERResult(0.0, 0.0, 0.0, 0.0, 0.0)
+
+    if regions is None:
+        total_ref_time = sum(s.duration for s in reference)
+    else:
+        total_ref_time = sum(_region_intersection(s.start, s.end, regions) for s in reference)
     if total_ref_time == 0:
         return DERResult(0.0, 0.0, 0.0, 0.0, 0.0)
 
@@ -101,7 +119,8 @@ def compute_der(
     ]
 
     boundaries = sorted({s.start for s in reference} | {s.end for s in reference}
-                         | {s.start for s in mapped_hyp} | {s.end for s in mapped_hyp})
+                         | {s.start for s in mapped_hyp} | {s.end for s in mapped_hyp}
+                         | ({b for r in regions for b in r} if regions else set()))
 
     missed = 0.0
     false_alarm = 0.0
@@ -111,6 +130,8 @@ def compute_der(
         mid = (a + b) / 2
         dur = b - a
         if dur <= 0:
+            continue
+        if regions is not None and not _in_regions(mid, regions):
             continue
         if collar > 0 and _within_collar(mid, reference, collar):
             continue
@@ -138,3 +159,43 @@ def _within_collar(t: float, reference: list[SpeechSegment], collar: float) -> b
         if abs(t - seg.start) < collar or abs(t - seg.end) < collar:
             return True
     return False
+
+
+def _merge_regions(regions: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Sort and coalesce touching/overlapping intervals so containment tests can binary-search."""
+    ordered = sorted((float(s), float(e)) for s, e in regions if e > s)
+    merged: list[list[float]] = []
+    for start, end in ordered:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(s, e) for s, e in merged]
+
+
+def complement_regions(
+    regions: list[tuple[float, float]], start: float, end: float
+) -> list[tuple[float, float]]:
+    """The parts of [start, end) not covered by `regions` -- i.e. the non-overlap timeline
+    when `regions` are the reference overlap regions."""
+    merged = _merge_regions(regions)
+    out: list[tuple[float, float]] = []
+    cursor = start
+    for r_start, r_end in merged:
+        if r_end <= start or r_start >= end:
+            continue
+        if r_start > cursor:
+            out.append((cursor, min(r_start, end)))
+        cursor = max(cursor, r_end)
+    if cursor < end:
+        out.append((cursor, end))
+    return [(s, e) for s, e in out if e > s]
+
+
+def _in_regions(t: float, regions: list[tuple[float, float]]) -> bool:
+    i = bisect.bisect_right(regions, (t, float("inf"))) - 1
+    return i >= 0 and regions[i][0] <= t < regions[i][1]
+
+
+def _region_intersection(start: float, end: float, regions: list[tuple[float, float]]) -> float:
+    return sum(max(0.0, min(end, r_end) - max(start, r_start)) for r_start, r_end in regions)

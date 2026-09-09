@@ -14,20 +14,32 @@ class MFCCStatsEmbedder:
         self.n_bands = n_bands
         self.sample_rate_hint = sample_rate_hint
 
+    _LOG_FLOOR = np.log(1e-8)  # value used for a band with no FFT bins in it
+
+    def _log_band_means(self, spectrum: np.ndarray) -> list[float]:
+        """Split a magnitude spectrum into `n_bands` and take log-mean energy per band.
+
+        A short segment yields fewer FFT bins than there are bands, so `array_split` hands
+        back empty arrays and `np.mean([])` is NaN -- which propagates all the way into
+        AgglomerativeClustering and aborts the run ("Input X contains NaN"). Framing makes
+        this routine: with hop = len(audio)//20, any segment under ~60ms produces empty
+        bands in the per-frame loop. Empty bands take the log floor instead, which is a
+        constant across embeddings and so leaves cosine similarity well-defined."""
+        return [
+            float(np.log(np.mean(b) + 1e-8)) if b.size else float(self._LOG_FLOOR)
+            for b in np.array_split(spectrum, self.n_bands)
+        ]
+
     def embed(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
         audio = audio.astype(np.float64)
         if len(audio) == 0:
             return np.zeros(self.n_bands * 2, dtype=np.float32)
-        spectrum = np.abs(np.fft.rfft(audio))
-        bands = np.array_split(spectrum, self.n_bands)
-        band_energy = np.array([np.log(np.mean(b) + 1e-8) for b in bands])
+        band_energy = np.array(self._log_band_means(np.abs(np.fft.rfft(audio))))
         # frame the signal to get a "std across time" component too
         hop = max(1, len(audio) // 20)
         frame_bands = []
         for i in range(0, len(audio) - hop, hop):
-            frame_spec = np.abs(np.fft.rfft(audio[i:i + hop]))
-            fb = np.array_split(frame_spec, self.n_bands)
-            frame_bands.append([np.log(np.mean(b) + 1e-8) for b in fb])
+            frame_bands.append(self._log_band_means(np.abs(np.fft.rfft(audio[i:i + hop]))))
         std = np.std(frame_bands, axis=0) if frame_bands else np.zeros(self.n_bands)
         return np.concatenate([band_energy, std]).astype(np.float32)
 

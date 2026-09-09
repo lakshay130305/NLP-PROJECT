@@ -123,6 +123,8 @@ class OverlapAwarePipeline:
                         seg_audio, sample_rate, self.separator, self.config.max_overlap_speakers,
                     )
                 stats.record_separator_call(seg.duration)
+                if self.config.collect_separated_audio:
+                    stats.record_separated_audio(seg.start, seg.end, list(streams))
             else:
                 streams = [seg_audio]  # B3: no separation, attribute the mixed segment directly (section 8.4 note)
 

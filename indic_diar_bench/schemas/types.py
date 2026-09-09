@@ -95,3 +95,8 @@ class ManifestEntry:
     duration: float
     reference_segments: list[SpeechSegment] = field(default_factory=list)
     reference_transcript: SpeakerAttributedTranscript | None = None
+    # ground-truth isolated per-speaker waveforms, keyed by speaker label, when the recording
+    # has them (the synthetic generator mixes its own stems and can hand them back). Indic
+    # DiarBench publishes only the mixture, so this stays None there and SI-SDR is skipped.
+    source_tracks: dict[str, object] | None = None
+    sample_rate: int | None = None

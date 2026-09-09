@@ -21,6 +21,12 @@ class AHCClusterer:
         if len(embeddings) == 1:
             return ["SPK00"]
 
+        # Safety net for an overnight batch: one non-finite value anywhere in the matrix
+        # makes AgglomerativeClustering raise and takes the whole run down with it. A
+        # zeroed embedding just clusters badly for that one segment. Embedders are expected
+        # to return finite vectors (see MFCCStatsEmbedder._log_band_means); this is the
+        # backstop, not the fix.
+        embeddings = np.nan_to_num(np.asarray(embeddings, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
         normed = embeddings / (np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-8)
 
         if self.num_speakers is not None:

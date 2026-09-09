@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 from pathlib import Path
@@ -29,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from data.prep.language_codes import language_to_whisper_code
 from data.prep.synthetic import generate_conversation, synthetic_manifest_entry
-from eval.evaluate import aggregate, evaluate_recording
+from eval.evaluate import aggregate, aggregate_by, evaluate_recording
 from eval.significance import bootstrap_ci, cohens_d_paired, paired_test
 from pipeline.config import Backend
 from pipeline.orchestrator import OverlapAwarePipeline
@@ -64,6 +65,41 @@ def iter_real_recordings(languages, conditions, limit):
     yield from round_robin_recordings(languages or ALL_LANGUAGES, conditions, limit=limit)
 
 
+def parse_conditions(values):
+    """--conditions near_field far_field -> [AcousticCondition.NEAR_FIELD, ...]"""
+    if not values:
+        return None
+    from schemas.types import AcousticCondition
+
+    out = []
+    for v in values:
+        try:
+            out.append(AcousticCondition(v.lower()))
+        except ValueError:
+            valid = [c.value for c in AcousticCondition]
+            raise SystemExit(f"Unknown --conditions value '{v}'. Valid: {valid}")
+    return out
+
+
+def parse_taus(raw):
+    """--osd-tau 0.3,0.5,0.7 -> [0.3, 0.5, 0.7]; None -> [None] (use each variant's default)."""
+    if raw is None:
+        return [None]
+    taus = []
+    for part in str(raw).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            tau = float(part)
+        except ValueError:
+            raise SystemExit(f"--osd-tau expects numbers (e.g. 0.3,0.5,0.7), got '{part}'")
+        if not 0.0 < tau < 1.0:
+            raise SystemExit(f"--osd-tau must be in (0, 1), got {tau}")
+        taus.append(tau)
+    return taus or [None]
+
+
 def iter_local_parquet_recordings(parquet_path, limit):
     from data.prep.manifest import load_indic_diarbench_local
 
@@ -91,7 +127,7 @@ def print_significance(baseline_name: str, baseline_results, results_by_variant:
         return
 
     header = (
-        f"{'Variant':<10} {'Metric':<7} {'Baseline':>9} {'Variant':>9} {'95% CI (variant)':>18} "
+        f"{'Variant':<13} {'Metric':<7} {'Baseline':>9} {'Variant':>9} {'95% CI (variant)':>18} "
         f"{'p-value':>9} {'Cohen d':>9}  Verdict"
     )
     print(header)
@@ -119,7 +155,7 @@ def print_significance(baseline_name: str, baseline_results, results_by_variant:
 
             ci_str = f"[{ci.lower:.3f}, {ci.upper:.3f}]"
             print(
-                f"{variant_name:<10} {metric:<7} {baseline_mean:>9.3f} {ci.mean:>9.3f} {ci_str:>18} "
+                f"{variant_name:<13} {metric:<7} {baseline_mean:>9.3f} {ci.mean:>9.3f} {ci_str:>18} "
                 f"{test_result.p_value:>9.4f} {effect:>9.3f}  {verdict}"
             )
 
@@ -150,30 +186,119 @@ def print_transcript_comparison(variant_name: str, entry, transcript, stats, res
     )
 
 
+BREAKDOWN_KEYS = ("language", "condition", "speakers", "overlap")
+
+BREAKDOWN_TITLES = {
+    "language": "Per-language breakdown (section 17.1)",
+    "condition": "Per-acoustic-condition breakdown (section 17.2)",
+    "speakers": "Per-speaker-count breakdown (section 17.3)",
+    "overlap": "Per-overlap-intensity breakdown (overlap strata, section 3.5)",
+}
+
+
+def _fmt(value, width: int = 7, places: int = 3) -> str:
+    """NaN-safe cell formatter -- an unscoreable column should read as '--', not 'nan'."""
+    if value is None or math.isnan(value):
+        return f"{'--':>{width}}"
+    return f"{value:>{width}.{places}f}"
+
+
+def build_jobs(variant_names, taus, backend, args):
+    """One job per (variant, tau). Variants that don't run OSD are built once even under a
+    tau sweep -- tau cannot change their output, and re-running them would burn GPU time on
+    identical results and pad the table with rows that only look like a comparison."""
+    jobs = []
+    sweeping = len(taus) > 1
+    seen_non_osd = set()
+    for variant_name in variant_names:
+        for tau in taus:
+            overrides = {} if tau is None else {"osd_tau": tau}
+            cfg = build_variant(
+                variant_name, backend=backend, asr_model_size=args.asr_model_size,
+                hf_token=args.hf_token, device=args.device,
+                collect_separated_audio=args.si_sdr, **overrides,
+            )
+            if sweeping and not cfg.use_osd:
+                if variant_name in seen_non_osd:
+                    continue
+                seen_non_osd.add(variant_name)
+                jobs.append((variant_name, cfg))
+            else:
+                jobs.append((f"{variant_name}@{tau}" if sweeping else variant_name, cfg))
+    return jobs
+
+
+def print_breakdown(key: str, results_by_variant: dict) -> None:
+    header = (
+        f"{'System':<12} {'Group':<16} {'n':>4} {'DER':>7} {'DER-ov':>7} {'DER-no':>7} "
+        f"{'WDER':>7} {'cpWER':>7} {'OSD-F1':>7} {'Routed%':>8}"
+    )
+    print(f"\n{BREAKDOWN_TITLES[key]}:\n")
+    print(header)
+    print("-" * len(header))
+    for label, results in results_by_variant.items():
+        for group, agg in aggregate_by(results, key).items():
+            print(
+                f"{label:<12} {group:<16} {int(agg['n']):>4} {_fmt(agg['der'])} "
+                f"{_fmt(agg['der_overlap'])} {_fmt(agg['der_nonoverlap'])} {_fmt(agg['wder'])} "
+                f"{_fmt(agg['cpwer'])} {_fmt(agg['osd_f1'])} {agg['routed_fraction'] * 100:>7.1f}%"
+            )
+    print(
+        "\n(n is the number of recordings in that stratum -- a row with n=1 is an anecdote, not a "
+        "per-group result. DER-ov / DER-no are DER restricted to reference overlap regions and to "
+        "everything else.)"
+    )
+
+
+def print_si_sdr(results_by_variant: dict) -> None:
+    print("\nSeparation quality (SI-SDR, dB, higher is better):\n")
+    header = f"{'System':<12} {'SI-SDR':>8} {'scored':>7}"
+    print(header)
+    print("-" * len(header))
+    any_scored = False
+    for label, results in results_by_variant.items():
+        agg = aggregate(results)
+        any_scored = any_scored or agg["n_si_sdr"] > 0
+        print(f"{label:<12} {_fmt(agg['si_sdr'], 8, 2)} {int(agg['n_si_sdr']):>7}")
+    if not any_scored:
+        print(
+            "\n(No recording had ground-truth isolated sources, so SI-SDR is undefined here. Indic "
+            "DiarBench publishes only the mixture and an RTTM -- separation quality is directly "
+            "scorable on --synthetic runs, and only indirectly (via DER/WDER/cpWER) on real data.)"
+        )
+
+
 def run(args: argparse.Namespace) -> None:
     variants = args.variants.split(",") if args.variants else list(ALL_VARIANTS)
     backend = Backend.PRETRAINED if args.backend == "pretrained" else Backend.DUMMY
+    taus = parse_taus(args.osd_tau)
 
     if args.synthetic is not None:
         recordings = list(iter_synthetic_recordings(args.synthetic))
     elif args.parquet is not None:
         recordings = list(iter_local_parquet_recordings(args.parquet, args.limit))
     else:
-        recordings = list(iter_real_recordings(args.languages, None, args.limit))
+        recordings = list(iter_real_recordings(args.languages, parse_conditions(args.conditions), args.limit))
+
+    jobs = build_jobs(variants, taus, backend, args)
 
     device_note = f", device={args.device}" if backend == Backend.PRETRAINED else ""
-    print(f"Evaluating {len(recordings)} recording(s) x {len(variants)} variant(s), backend={backend.value}{device_note}\n")
+    tau_note = f", osd_tau sweep={taus}" if len(taus) > 1 else ""
+    print(
+        f"Evaluating {len(recordings)} recording(s) x {len(jobs)} run(s), "
+        f"backend={backend.value}{device_note}{tau_note}\n"
+    )
 
-    header = f"{'System':<10} {'DER':>7} {'WDER':>7} {'cpWER':>7} {'WER':>7} {'RTF':>7} {'OSD-F1':>7} {'Routed%':>8}"
+    header = (
+        f"{'System':<12} {'DER':>7} {'DER-ov':>7} {'DER-no':>7} {'WDER':>7} {'cpWER':>7} "
+        f"{'WER':>7} {'RTF':>7} {'OSD-F1':>7} {'Routed%':>8}"
+    )
     print(header)
     print("-" * len(header))
 
     results_by_variant: dict[str, list] = {}
 
-    for variant_name in variants:
-        cfg = build_variant(
-            variant_name, backend=backend, asr_model_size=args.asr_model_size, hf_token=args.hf_token, device=args.device
-        )
+    for label, cfg in jobs:
         pipeline = OverlapAwarePipeline(cfg)
 
         results = []
@@ -185,28 +310,36 @@ def run(args: argparse.Namespace) -> None:
             result = evaluate_recording(entry, transcript, predicted_overlap, stats)
             results.append(result)
             if args.show_transcript:
-                print_transcript_comparison(variant_name, entry, transcript, stats, result)
+                print_transcript_comparison(label, entry, transcript, stats, result)
 
-        results_by_variant[variant_name] = results
+        results_by_variant[label] = results
         agg = aggregate(results)
         print(
-            f"{variant_name:<10} {agg['der']:>7.3f} {agg['wder']:>7.3f} {agg['cpwer']:>7.3f} "
-            f"{agg['wer']:>7.3f} {agg['rtf']:>7.3f} {agg['osd_f1']:>7.3f} {agg['routed_fraction']*100:>7.1f}%"
+            f"{label:<12} {_fmt(agg['der'])} {_fmt(agg['der_overlap'])} {_fmt(agg['der_nonoverlap'])} "
+            f"{_fmt(agg['wder'])} {_fmt(agg['cpwer'])} {_fmt(agg['wer'])} {_fmt(agg['rtf'])} "
+            f"{_fmt(agg['osd_f1'])} {agg['routed_fraction'] * 100:>7.1f}%"
         )
 
     print("\nDER breakdown (fraction of total reference speech time) + OSD precision/recall:\n")
     bd_header = (
-        f"{'System':<10} {'DER':>7} {'Missed':>7} {'FalseAl':>7} {'Confus':>7} "
+        f"{'System':<12} {'DER':>7} {'Missed':>7} {'FalseAl':>7} {'Confus':>7} "
         f"{'OSD-P':>7} {'OSD-R':>7} {'OSD-F1':>7}"
     )
     print(bd_header)
     print("-" * len(bd_header))
-    for variant_name, results in results_by_variant.items():
+    for label, results in results_by_variant.items():
         agg = aggregate(results)
         print(
-            f"{variant_name:<10} {agg['der']:>7.3f} {agg['der_missed']:>7.3f} {agg['der_false_alarm']:>7.3f} "
-            f"{agg['der_confusion']:>7.3f} {agg['osd_precision']:>7.3f} {agg['osd_recall']:>7.3f} {agg['osd_f1']:>7.3f}"
+            f"{label:<12} {_fmt(agg['der'])} {_fmt(agg['der_missed'])} {_fmt(agg['der_false_alarm'])} "
+            f"{_fmt(agg['der_confusion'])} {_fmt(agg['osd_precision'])} {_fmt(agg['osd_recall'])} "
+            f"{_fmt(agg['osd_f1'])}"
         )
+
+    if args.si_sdr:
+        print_si_sdr(results_by_variant)
+
+    for key in (args.breakdown or []):
+        print_breakdown(key, results_by_variant)
 
     if args.significance:
         if args.baseline not in results_by_variant:
@@ -247,11 +380,28 @@ def main():
                               "and at least 2 recordings.")
     parser.add_argument("--baseline", type=str, default="B1",
                          help="Variant to treat as the baseline for --significance (default: B1).")
+    parser.add_argument("--conditions", nargs="*", default=None, metavar="COND",
+                         help="Restrict to these acoustic conditions (near_field, far_field, in_the_wild). "
+                              "--dataset only. Needed for the per-condition comparison table.")
+    parser.add_argument("--osd-tau", type=str, default=None, metavar="TAU[,TAU...]",
+                         help="Override the OSD decision threshold. Accepts a comma-separated sweep "
+                              "(e.g. --osd-tau 0.3,0.5,0.7), which runs every OSD-using variant once per "
+                              "threshold and labels the rows VARIANT@TAU. Variants without OSD are run "
+                              "once regardless, since tau cannot change their output.")
+    parser.add_argument("--breakdown", nargs="*", default=None, choices=BREAKDOWN_KEYS, metavar="KEY",
+                         help="Print per-stratum result tables in addition to the pooled one. "
+                              "Choices: " + ", ".join(BREAKDOWN_KEYS) + ". Pass with no value for all four.")
+    parser.add_argument("--si-sdr", action="store_true",
+                         help="Score separation quality directly (SI-SDR) against ground-truth isolated "
+                              "sources. Only meaningful on --synthetic runs: the real dataset ships the "
+                              "mixture only. Holds separated audio in memory, hence off by default.")
     parser.add_argument("--show-transcript", action="store_true",
                          help="Print the reference (ground truth) and predicted (model output) transcript, "
                               "plus per-recording metrics, for every recording/variant -- not just the "
                               "aggregate table. Useful for a single clip: --limit 1 --show-transcript.")
     args = parser.parse_args()
+    if args.breakdown is not None and not args.breakdown:
+        args.breakdown = list(BREAKDOWN_KEYS)  # bare --breakdown means "all of them"
     if args.hf_token is None:
         args.hf_token = os.environ.get("HF_TOKEN")
 
